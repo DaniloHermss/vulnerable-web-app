@@ -1,19 +1,47 @@
-name: Deploy Vulnerable Application                                  # workflow name
+name: Deploy to Heroku (Docker)
 
 on:
   push:
-    branches:
-      - master
+    branches: ["main", "master"]   # ajustá si usás otro branch
+  workflow_dispatch:
+
 jobs:
-  deploy-heroku:
-    name: Deploy Heroku
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: akhileshns/heroku-deploy@v3.12.12 # This is the action
-        with:
-          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
-          heroku_app_name: "danilo-herms-vulnapp-83735b803b46" #Must be unique in Heroku
-          heroku_email: "hermsdanilo@gmail.com"
-          remote_branch: "master"
-          usedocker: true
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build de la imagen Docker usando el Dockerfile del repo
+      - name: Build Docker image
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/amd64   # evita manifest-list multi-arch
+        run: docker build -t web .
+
+      # Login al registry de Heroku
+      - name: Heroku registry login
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+
+      # Tag & push al registry de Heroku
+      - name: Push image to Heroku Container Registry
+        env:
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+          DOCKER_BUILDKIT: "0"                    # fuerza single-manifest para evitar "unsupported"
+        run: |
+          docker tag web registry.heroku.com/${HEROKU_APP_NAME}/web
+          docker push registry.heroku.com/${HEROKU_APP_NAME}/web
+
+      # Release de la imagen como dyno web
+      - name: Release on Heroku
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          IMG_ID=$(docker inspect registry.heroku.com/${HEROKU_APP_NAME}/web --format={{.Id}})
+          curl -n -X POST https://api.heroku.com/apps/${HEROKU_APP_NAME}/releases \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+            -H "Authorization: Bearer ${HEROKU_API_KEY}" \
+            -d "{\"updates\":[{\"type\":\"web\",\"docker_image\":\"$IMG_ID\"}]}"
